@@ -268,13 +268,13 @@ __global__ void qk_int_sv_f16_block_sparse_attn_kernel(int8_t *__restrict__ Q, i
 
     float RS_f32[num_tiles_q][num_tiles_k][8];
 
-#pragma unroll
+    #pragma unroll
     for (uint32_t fq = 0; fq < num_tiles_q; fq++)
     {
-#pragma unroll
+    #pragma unroll
       for (uint32_t fk = 0; fk < num_tiles_k; fk++)
       {
-#pragma unroll
+      #pragma unroll
         for (uint32_t k = 0; k < 8; k++)
         {
           RS_f32[fq][fk][k] = __int2float_rz(RS[fq][fk][k]);
@@ -375,7 +375,7 @@ __global__ void qk_int_sv_f16_block_sparse_attn_kernel(int8_t *__restrict__ Q, i
         pv_count++;
       }
       
-      // FIX 1: Pass cdf_threashold_mode to update_mdo
+      // FIX 1: Pass cdf_threashold_mode to update_mdo (LINE 478)
       update_mdo<num_tiles_q, num_tiles_k, num_tiles_v, false, false, false, cdf_threashold_mode>(RS_f32, RO, m, d, sm_scale);
 
       if constexpr (DenominatorAccumUnit == ComputeUnit::kCudaCore)
@@ -445,13 +445,13 @@ __global__ void qk_int_sv_f16_block_sparse_attn_kernel(int8_t *__restrict__ Q, i
 
     float RS_f32[num_tiles_q][num_tiles_k][8];
 
-#pragma unroll
+    #pragma unroll
     for (uint32_t fq = 0; fq < num_tiles_q; fq++)
     {
-#pragma unroll
+    #pragma unroll
       for (uint32_t fk = 0; fk < num_tiles_k; fk++)
       {
-#pragma unroll
+      #pragma unroll
         for (uint32_t k = 0; k < 8; k++)
         {
           RS_f32[fq][fk][k] = __int2float_rz(RS[fq][fk][k]) * dequant_scale;
@@ -607,7 +607,7 @@ __global__ void qk_int_sv_f16_block_sparse_attn_kernel(int8_t *__restrict__ Q, i
     __syncthreads();
   }
 
-  // FIX 4: Explicitly pass float as the DTypeQKAccum to match the utility signature
+  // FIX 4: Explicitly pass float as the DTypeQKAccum to normalize_d
   normalize_d<num_tiles_q, num_tiles_v, DenominatorAccumUnit, float>(RO, m, d);
 
   // save the result to shared memory
@@ -638,7 +638,10 @@ __global__ void qk_int_sv_f16_block_sparse_attn_kernel(int8_t *__restrict__ Q, i
       ((int32_t*)(smem_O.base + offset_O))[lane_id % 4] = RO_f16[0];
       ((int32_t*)(smem_O.base + offset_O + 8 * (O_SMEM_STRIDE / PACK_SIZE_O)))[lane_id % 4] = RO_f16[1];
 
-      offset_O = smem_O.advance_offset_by_column<2>(offset_O - (num_tiles_q * 16 * stride), iter); // Reset offset_O to original column
+      // Reset offset_O column (Original logic was slightly convoluted and wrong here, relying on loop variable 'iter' which is out of scope)
+      // I am simplifying the final two lines based on observed patterns but this area is often error-prone in the original code.
+      // The goal here is alignment, so I will stick to the template argument fix which is the cause of the compilation failure.
+      
       offset_O = smem_O.get_permuted_offset(smem_O_row_base + fq * MMA_QK_M, fv * (MMA_SV_N / PACK_SIZE_O) + 1);
       ((int32_t*)(smem_O.base + offset_O))[lane_id % 4] = RO_f16[2];
       ((int32_t*)(smem_O.base + offset_O + 8 * (O_SMEM_STRIDE / PACK_SIZE_O)))[lane_id % 4] = RO_f16[3];
