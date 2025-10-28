@@ -653,7 +653,7 @@ __global__ void qk_int_sv_f8_block_sparse_attn_kernel(int8_t *__restrict__ Q, in
   }
 
   // FIX 4: Explicitly pass float as the DTypeQKAccum to normalize_d
-  normalize_d<num_tiles_q, num_tiles_v, ComputeUnit::kCudaCore, float>(RO, m, d);
+  normalize_d<num_tiles_q, num_tiles_k, num_tiles_v, ComputeUnit::kCudaCore, float>(RO, m, d);
 
   // save the result to shared memory
   uint32_t smem_O_row_base = get_warp_idx_q<num_warps_q, num_warps_k>() * WARP_Q + lane_id / 4;
