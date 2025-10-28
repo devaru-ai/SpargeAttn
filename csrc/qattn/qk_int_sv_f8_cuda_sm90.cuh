@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ * http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -173,7 +173,8 @@ __device__ __forceinline__ void arrive(uint64_t* bar){
     
 #endif
 
-template<uint32_t CTA_Q, uint32_t CTA_K, uint32_t NUM_THREADS, uint32_t head_dim, QuantGranularity Q_GRAN, QuantGranularity K_GRAN, PVThresholdMode pv_threashold_mode, typename DTypeOut, MaskMode mask_mode = MaskMode::kNone, bool fuse_v_scale = false, bool return_pv_count = false>
+// FIX 1: Corrected Template Definition for the CUDA Kernel (12 Arguments)
+template<uint32_t CTA_Q, uint32_t CTA_K, uint32_t NUM_THREADS, uint32_t head_dim, QuantGranularity Q_GRAN, QuantGranularity K_GRAN, PVThresholdMode pv_threashold_mode, uint32_t cdf_threashold_mode, typename DTypeOut, MaskMode mask_mode = MaskMode::kNone, bool fuse_v_scale = false, bool return_pv_count = false>
 __global__ void qk_int8_sv_f8_attn_kernel(const __grid_constant__ CUtensorMap tensorMapQ, 
                                         const __grid_constant__ CUtensorMap tensorMapK,
                                         const __grid_constant__ CUtensorMap tensorMapV,
@@ -181,7 +182,7 @@ __global__ void qk_int8_sv_f8_attn_kernel(const __grid_constant__ CUtensorMap te
                                         DTypeOut* O, int32_t *__restrict__ PV_Count, int32_t *__restrict__ Lut, int32_t *__restrict__ Valid_Block_Num, float *__restrict__ PV_Threshold,
                                         uint32_t stride_bz_o, uint32_t stride_h_o, uint32_t stride_seq_o,
                                         const uint32_t qo_len, const uint32_t kv_len, const uint32_t num_kv_groups,
-                                        float sm_scale)
+                                        float sm_scale, float cdfthreshd) // FIX 2: Added cdfthreshd runtime argument
 {
   static_assert(NUM_THREADS == 128);
   static_assert(CTA_Q <= CTA_K);
@@ -780,7 +781,8 @@ __global__ void qk_int8_sv_f8_attn_kernel(const __grid_constant__ CUtensorMap te
   }
 }
 
-template<uint32_t CTA_Q, uint32_t CTA_K, uint32_t NUM_THREADS, uint32_t head_dim, uint32_t qk_quant_gran, uint32_t pv_threashold_mode, typename DTypeOut, bool is_causal, bool fuse_v_scale, bool return_pv_count>
+// FIX 4: Corrected Template Definition for the Dispatcher (11 Arguments)
+template<uint32_t CTA_Q, uint32_t CTA_K, uint32_t NUM_THREADS, uint32_t head_dim, uint32_t qk_quant_gran, uint32_t pv_threashold_mode, uint32_t cdf_threashold_mode, typename DTypeOut, bool is_causal, bool fuse_v_scale, bool return_pv_count>
 void SpargeAttentionSM90Dispatched(
   int8_t* Q, int8_t* K, __nv_fp8_e4m3* V, DTypeOut* O,
   int32_t* PV_Count, int32_t *__restrict__ Lut, int32_t *__restrict__ Valid_Block_Num, float *__restrict__ PV_Threshold,
@@ -790,7 +792,8 @@ void SpargeAttentionSM90Dispatched(
   const uint32_t stride_bz_k, const uint32_t stride_seq_k, const uint32_t stride_h_k,
   const uint32_t stride_bz_v, const uint32_t stride_h_v, const uint32_t stride_d_v,
   const uint32_t stride_bz_o, const uint32_t stride_seq_o, const uint32_t stride_h_o,
-  float sm_scale)
+  float sm_scale,
+  float cdfthreshd) // FIX 3: Added cdfthreshd runtime argument
 {
   constexpr MaskMode mask_mode = is_causal ? MaskMode::kCausal : MaskMode::kNone;
 
@@ -798,7 +801,14 @@ void SpargeAttentionSM90Dispatched(
   CUtensorMap tma_map_K = create_tensor_map_4D<CTA_K, head_dim>(K, batch_size, num_kv_heads, kv_len, head_dim, stride_bz_k, stride_h_k, stride_seq_k);
   CUtensorMap tma_map_V = create_tensor_map_4D<head_dim, CTA_K>(V, batch_size, num_kv_heads, head_dim, padded_kv_len, stride_bz_v, stride_h_v, stride_d_v);
 
-  auto* kernel = qk_int8_sv_f8_attn_kernel<CTA_Q, CTA_K, NUM_THREADS, head_dim, static_cast<QuantGranularity>(qk_quant_gran), static_cast<QuantGranularity>(qk_quant_gran), static_cast<PVThresholdMode>(pv_threashold_mode), DTypeOut, mask_mode, fuse_v_scale, return_pv_count>;
+  // FIX 5: Corrected Template Instantiation for the Kernel (12 Arguments)
+  auto* kernel = qk_int8_sv_f8_attn_kernel<CTA_Q, CTA_K, NUM_THREADS, head_dim, 
+    static_cast<QuantGranularity>(qk_quant_gran), 
+    static_cast<QuantGranularity>(qk_quant_gran), 
+    static_cast<PVThresholdMode>(pv_threashold_mode), 
+    cdf_threashold_mode, // New parameter passed
+    DTypeOut, mask_mode, fuse_v_scale, return_pv_count>;
+    
   size_t sMemSize = CTA_Q * head_dim * sizeof(int8_t) + CTA_K * head_dim * sizeof(int8_t) + CTA_K * head_dim * sizeof(int8_t);
   cudaFuncSetAttribute(
       kernel,
@@ -818,5 +828,5 @@ void SpargeAttentionSM90Dispatched(
     Valid_Block_Num,
     PV_Threshold,
     stride_bz_o, stride_h_o, stride_seq_o,
-    qo_len, kv_len, num_qo_heads / num_kv_heads, sm_scale);
+    qo_len, kv_len, num_qo_heads / num_kv_heads, sm_scale, cdfthreshd); // FIX 6: Added cdfthreshd to kernel launch
 }

@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ * http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -39,8 +39,9 @@
 #define MMA_SV_N 16
 #define MMA_SV_K 32
 
+// FIX 1: Added cdf_threashold_mode to the kernel's template definition
 template<uint32_t CTA_Q, uint32_t CTA_K, uint32_t WARP_Q, uint32_t WARP_K, uint32_t head_dim, DataType DTypeQK, QuantGranularity Q_GRAN, QuantGranularity K_GRAN,
-        typename DTypeSVAccum = float, bool use_inst_buffer = false, bool use_pv_fp16_accu=false, PVThresholdMode pv_threashold_mode, typename DTypeOut = half, ComputeUnit DenominatorAccumUnit, MaskMode mask_mode = MaskMode::kNone, bool fuse_v_scale = false, bool return_pv_count = false>
+        typename DTypeSVAccum = float, bool use_inst_buffer = false, bool use_pv_fp16_accu=false, PVThresholdMode pv_threashold_mode, uint32_t cdf_threashold_mode, typename DTypeOut = half, ComputeUnit DenominatorAccumUnit, MaskMode mask_mode = MaskMode::kNone, bool fuse_v_scale = false, bool return_pv_count = false>
 __global__ void qk_int_sv_f8_block_sparse_attn_kernel(int8_t *__restrict__ Q, int8_t *__restrict__ K, int8_t *__restrict__ V, DTypeOut *__restrict__ O, int32_t *__restrict__ PV_Count, int32_t *__restrict__ Lut, int32_t *__restrict__ Valid_Block_Num, float *__restrict__ PV_Threshold,
                       float *__restrict__ Q_scale, float *__restrict__ K_scale, float *__restrict__ V_scale,
                       const uint32_t qo_len, const uint32_t kv_len, const uint32_t num_kv_groups,
@@ -48,7 +49,8 @@ __global__ void qk_int_sv_f8_block_sparse_attn_kernel(int8_t *__restrict__ Q, in
                       const uint32_t stride_bz_k, const uint32_t stride_seq_k, const uint32_t stride_h_k,
                       const uint32_t stride_bz_v, const uint32_t stride_h_v, const uint32_t stride_d_v,
                       const uint32_t stride_bz_o, const uint32_t stride_seq_o, const uint32_t stride_h_o,
-                      float sm_scale)
+                      float sm_scale,
+                      float cdfthreshd) // FIX 2: Added cdfthreshd runtime argument
 {
   // compile time check
   static_assert(DTypeQK == DataType::kInt8 || DTypeQK == DataType::kInt4, "DTypeQK must be int8 or int4");
@@ -501,7 +503,7 @@ __global__ void qk_int_sv_f8_block_sparse_attn_kernel(int8_t *__restrict__ Q, in
     KV_block_increm = Lut[num_iterations - 1];
     K_lane_base_ptr += KV_block_increm * CTA_K * stride_seq_k;
     K_load_idx_lane_base += KV_block_increm * CTA_K;
-    load_global_to_share<global_to_shared_line_lanes_QK, global_to_shared_copy_lines_per_warp_QK, QK_smem_iters_row, K_smem_iters_col, swizzle_mode_QK, QK_SMEM_STRIDE / PACK_SIZE_QK, CTA_K>(
+    load_global_to_share<global_to_shared_line_lanes_QK, global_to_shared_copy_lines_per_warp_QK, QK_SMEM_STRIDE / PACK_SIZE_QK, CTA_K>(
       K_lane_base_ptr, K_smem_offset_load, stride_seq_k, smem_K, K_load_idx_lane_base, kv_len);
     cp_async::commit_group();
 
@@ -754,7 +756,8 @@ __global__ void qk_int_sv_f8_block_sparse_attn_kernel(int8_t *__restrict__ Q, in
   }
 }
 
-template<uint32_t CTA_Q, uint32_t CTA_K, uint32_t WARP_Q, uint32_t WARP_K, uint32_t head_dim, uint32_t qk_quant_gran, typename DTypePVAccum, bool use_inst_buffer, bool use_pv_fp16_accu, uint32_t pv_threashold_mode, typename DTypeOut, bool is_causal, bool fuse_v_scale, bool return_pv_count>
+// FIX 3: Added cdf_threashold_mode template parameter to dispatcher signature
+template<uint32_t CTA_Q, uint32_t CTA_K, uint32_t WARP_Q, uint32_t WARP_K, uint32_t head_dim, uint32_t qk_quant_gran, typename DTypePVAccum, bool use_inst_buffer, bool use_pv_fp16_accu, uint32_t pv_threashold_mode, uint32_t cdf_threashold_mode, typename DTypeOut, bool is_causal, bool fuse_v_scale, bool return_pv_count>
 void SpargeAttentionSM89Dispatched(
   int8_t* Q, int8_t* K, __nv_fp8_e4m3* V, DTypeOut* O,
   int32_t* PV_Count, int32_t *__restrict__ Lut, int32_t *__restrict__ Valid_Block_Num, float *__restrict__ PV_Threshold,
@@ -764,13 +767,16 @@ void SpargeAttentionSM89Dispatched(
   const uint32_t stride_bz_k, const uint32_t stride_seq_k, const uint32_t stride_h_k,
   const uint32_t stride_bz_v, const uint32_t stride_h_v, const uint32_t stride_d_v,
   const uint32_t stride_bz_o, const uint32_t stride_seq_o, const uint32_t stride_h_o,
-  float sm_scale)
+  float sm_scale,
+  float cdfthreshd) // FIX 4: Added cdfthreshd runtime argument
 {
   constexpr MaskMode mask_mode = is_causal ? MaskMode::kCausal : MaskMode::kNone;
 
   //                                     smem_Q                                     smem_K                            smem_V                     smem_O
   size_t smem_max = std::max(CTA_Q * head_dim * sizeof(int8_t) + CTA_K * head_dim * sizeof(int8_t) + CTA_K * head_dim * sizeof(int8_t), CTA_Q * head_dim * sizeof(half));
-  auto kernel_func = qk_int_sv_f8_block_sparse_attn_kernel<CTA_Q, CTA_K, WARP_Q, WARP_K, head_dim, DataType::kInt8, static_cast<QuantGranularity>(qk_quant_gran), static_cast<QuantGranularity>(qk_quant_gran), DTypePVAccum, use_inst_buffer, use_pv_fp16_accu, static_cast<PVThresholdMode>(pv_threashold_mode), DTypeOut, ComputeUnit::kCudaCore, mask_mode, fuse_v_scale, return_pv_count>;
+  
+  // FIX 5: Corrected Template Instantiation for the Kernel (15 Arguments)
+  auto kernel_func = qk_int_sv_f8_block_sparse_attn_kernel<CTA_Q, CTA_K, WARP_Q, WARP_K, head_dim, DataType::kInt8, static_cast<QuantGranularity>(qk_quant_gran), static_cast<QuantGranularity>(qk_quant_gran), DTypePVAccum, use_inst_buffer, use_pv_fp16_accu, static_cast<PVThresholdMode>(pv_threashold_mode), cdf_threashold_mode, DTypeOut, ComputeUnit::kCudaCore, mask_mode, fuse_v_scale, return_pv_count>;
 
   cudaFuncSetAttribute(kernel_func, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_max);
 
@@ -780,7 +786,7 @@ void SpargeAttentionSM89Dispatched(
   kernel_func<<<grid, block, smem_max>>>(
     Q, 
     K,
-    reinterpret_cast<int8_t*>(V), // legacy
+    reinterpret_cast<int8_t*>(V), // V is __nv_fp8_e4m3*, which is int8_t* in memory
     O,
     PV_Count,
     Lut,
@@ -791,10 +797,11 @@ void SpargeAttentionSM89Dispatched(
     V_scale,
     qo_len,
     kv_len,
-    num_qo_heads / num_kv_heads,
+    num_qo_heads / num_kv_groups,
     stride_bz_q, stride_seq_q, stride_h_q,
     stride_bz_k, stride_seq_k, stride_h_k,
     stride_bz_v, stride_h_v, stride_d_v,
     stride_bz_o, stride_seq_o, stride_h_o,
-    sm_scale);
+    sm_scale,
+    cdfthreshd); // FIX 6: Added cdfthreshd to kernel launch
 }
