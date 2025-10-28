@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ * http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -27,7 +27,8 @@ void qk_int8_sv_f16_accum_f16_block_sparse_attn_inst_buf(torch::Tensor query,
                     int tensor_layout,
                     int is_causal,
                     int qk_quant_gran,
-                    float sm_scale);
+                    float sm_scale,
+                    float cdfthreshd); // FIX: Added cdfthreshd
 
 torch::Tensor qk_int8_sv_f16_accum_f16_block_sparse_attn_inst_buf_with_pv_threshold(torch::Tensor query,
                     torch::Tensor key,
@@ -42,6 +43,7 @@ torch::Tensor qk_int8_sv_f16_accum_f16_block_sparse_attn_inst_buf_with_pv_thresh
                     int is_causal,
                     int qk_quant_gran,
                     float sm_scale,
+                    float cdfthreshd, // FIX: Added cdfthreshd
                     int return_pv_count);
 
 void qk_int8_sv_f8_accum_f32_block_sparse_attn_inst_buf_fuse_v_scale(torch::Tensor query,
@@ -56,7 +58,8 @@ void qk_int8_sv_f8_accum_f32_block_sparse_attn_inst_buf_fuse_v_scale(torch::Tens
     int tensor_layout,
     int is_causal,
     int qk_quant_gran,
-    float sm_scale);
+    float sm_scale,
+    float cdfthreshd); // FIX: Added cdfthreshd
 
 torch::Tensor qk_int8_sv_f8_accum_f32_block_sparse_attn_inst_buf_fuse_v_scale_with_pv_threshold(torch::Tensor query,
     torch::Tensor key,
@@ -72,6 +75,7 @@ torch::Tensor qk_int8_sv_f8_accum_f32_block_sparse_attn_inst_buf_fuse_v_scale_wi
     int is_causal,
     int qk_quant_gran,
     float sm_scale,
+    float cdfthreshd, // FIX: Added cdfthreshd
     int return_pv_count);
 
 torch::Tensor qk_int8_sv_f8_accum_f16_block_sparse_attn_inst_buf_fuse_v_scale_with_pv_threshold(torch::Tensor query,
@@ -88,6 +92,7 @@ torch::Tensor qk_int8_sv_f8_accum_f16_block_sparse_attn_inst_buf_fuse_v_scale_wi
     int is_causal,
     int qk_quant_gran,
     float sm_scale,
+    float cdfthreshd, // FIX: Added cdfthreshd
     int return_pv_count);
 
 void qk_int8_sv_f8_accum_f32_block_sparse_attn_inst_buf_fuse_v_scale_sm90(
@@ -103,7 +108,8 @@ void qk_int8_sv_f8_accum_f32_block_sparse_attn_inst_buf_fuse_v_scale_sm90(
     int tensor_layout,
     int is_causal,
     int qk_quant_gran,
-    float sm_scale);
+    float sm_scale,
+    float cdfthreshd); // FIX: Added cdfthreshd
 
 torch::Tensor qk_int8_sv_f8_accum_f32_block_sparse_attn_inst_buf_fuse_v_scale_with_pv_threshold_sm90(
     torch::Tensor query,
@@ -120,4 +126,5 @@ torch::Tensor qk_int8_sv_f8_accum_f32_block_sparse_attn_inst_buf_fuse_v_scale_wi
     int is_causal,
     int qk_quant_gran,
     float sm_scale,
+    float cdfthreshd, // FIX: Added cdfthreshd
     int return_pv_count);
