@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ * http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,6 +16,11 @@
 
 #include "../pytorch_extensions_utils.cuh"
 #include "decl.cuh"
+
+// Assume the following are fixed template parameters for SM80/FP16 kernel
+constexpr int CDF_THRESHD_MODE = 0; // Using 0 for the non-pv_threshold variant
+constexpr bool USE_PV_FP16_ACCU = false;
+constexpr bool FUSE_V_SCALE = false;
 
 void qk_int8_sv_f16_accum_f16_block_sparse_attn_inst_buf(torch::Tensor query,
                     torch::Tensor key,
@@ -162,15 +167,15 @@ void qk_int8_sv_f16_accum_f16_block_sparse_attn_inst_buf(torch::Tensor query,
           CHECK_SHAPE(lut, batch_size, num_qo_heads, div_ceil(qo_len, CTA_Q), div_ceil(kv_len, CTA_K));
           CHECK_SHAPE(valid_block_num, batch_size, num_qo_heads, div_ceil(qo_len, CTA_Q));
           
-          SpargeAttentionSM80Dispatched<CTA_Q, CTA_K, WARP_Q, WARP_K, HEAD_DIM, QK_QUANT_GRAN, float, true, 0, DTypeOut, IS_CAUSAL, false>(
+          SpargeAttentionSM80Dispatched<CTA_Q, CTA_K, WARP_Q, WARP_K, HEAD_DIM, QK_QUANT_GRAN, float, true, USE_PV_FP16_ACCU, 0, CDF_THRESHD_MODE, DTypeOut, IS_CAUSAL, FUSE_V_SCALE, false>( // FIX 1: Added missing template args (WARP_Q, WARP_K, use_pv_fp16_accu, cdf_threashold_mode, fuse_v_scale)
             reinterpret_cast<int8_t*>(query.data_ptr()),
             reinterpret_cast<int8_t*>(key.data_ptr()),
             reinterpret_cast<half*>(value.data_ptr()),
             reinterpret_cast<DTypeOut*>(output.data_ptr()),
-            nullptr,
+            nullptr, // PV_Count
             reinterpret_cast<int32_t*>(lut.data_ptr()),
             reinterpret_cast<int32_t*>(valid_block_num.data_ptr()),
-            nullptr,
+            nullptr, // PV_Threshold
             reinterpret_cast<float*>(query_scale.data_ptr()),
             reinterpret_cast<float*>(key_scale.data_ptr()),
             batch_size, qo_len, kv_len, num_qo_heads, num_kv_heads,
@@ -178,7 +183,7 @@ void qk_int8_sv_f16_accum_f16_block_sparse_attn_inst_buf(torch::Tensor query,
             stride_bz_k, stride_seq_k, stride_h_k,
             stride_bz_v, stride_seq_v, stride_h_v,
             stride_bz_o, stride_seq_o, stride_h_o,
-            sm_scale);
+            sm_scale, 0.0f); // FIX 2: Added cdfthreshd runtime argument with default 0.0f
         });
       });
     });
@@ -198,6 +203,7 @@ torch::Tensor qk_int8_sv_f16_accum_f16_block_sparse_attn_inst_buf_with_pv_thresh
                     int is_causal,
                     int qk_quant_gran,
                     float sm_scale,
+                    float cdfthreshd, // FIX 3: Added cdfthreshd to function signature
                     int return_pv_count)
 {
   CHECK_CUDA(query);
@@ -345,7 +351,8 @@ torch::Tensor qk_int8_sv_f16_accum_f16_block_sparse_attn_inst_buf_with_pv_thresh
             CHECK_SHAPE(valid_block_num, batch_size, num_qo_heads, div_ceil(qo_len, CTA_Q));
             CHECK_SHAPE(pv_threshold, num_qo_heads);
 
-            SpargeAttentionSM80Dispatched<CTA_Q, CTA_K, WARP_Q, WARP_K, HEAD_DIM, QK_QUANT_GRAN, float, true, 1, DTypeOut, IS_CAUSAL, RETURN_PV_COUNT>(
+            // FIX 4: Corrected template instantiation for SpargeAttentionSM80Dispatched (15 template args total)
+            SpargeAttentionSM80Dispatched<CTA_Q, CTA_K, WARP_Q, WARP_K, HEAD_DIM, QK_QUANT_GRAN, float, true, USE_PV_FP16_ACCU, 1, CDF_THRESHD_MODE, DTypeOut, IS_CAUSAL, FUSE_V_SCALE, RETURN_PV_COUNT>(
               reinterpret_cast<int8_t*>(query.data_ptr()),
               reinterpret_cast<int8_t*>(key.data_ptr()),
               reinterpret_cast<half*>(value.data_ptr()),
@@ -361,7 +368,7 @@ torch::Tensor qk_int8_sv_f16_accum_f16_block_sparse_attn_inst_buf_with_pv_thresh
               stride_bz_k, stride_seq_k, stride_h_k,
               stride_bz_v, stride_seq_v, stride_h_v,
               stride_bz_o, stride_seq_o, stride_h_o,
-              sm_scale);
+              sm_scale, cdfthreshd); // FIX 5: Added cdfthreshd runtime argument
           });
         });
       });

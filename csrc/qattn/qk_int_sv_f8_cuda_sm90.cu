@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ * http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,6 +16,10 @@
 
 #include "../pytorch_extensions_utils.cuh"
 #include "decl.cuh"
+
+// Assume the following are fixed template parameters for SM90 kernel
+constexpr int CDF_THRESHD_MODE_DEFAULT = 0; // Assuming 0 for non-pv_threshold variant
+constexpr int CDF_THRESHD_MODE_PV_ENABLED = 1; // Assuming 1 for pv_threshold variant
 
 void qk_int8_sv_f8_accum_f32_block_sparse_attn_inst_buf_fuse_v_scale_sm90(
                     torch::Tensor query,
@@ -30,7 +34,8 @@ void qk_int8_sv_f8_accum_f32_block_sparse_attn_inst_buf_fuse_v_scale_sm90(
                     int tensor_layout,
                     int is_causal,
                     int qk_quant_gran,
-                    float sm_scale)
+                    float sm_scale,
+                    float cdfthreshd = 0.0f) // FIX 1: Added cdfthreshd with default
 {
   CHECK_CUDA(query);
   CHECK_CUDA(key);
@@ -168,7 +173,7 @@ void qk_int8_sv_f8_accum_f32_block_sparse_attn_inst_buf_fuse_v_scale_sm90(
 
           CHECK_SHAPE(value_scale, batch_size, num_kv_heads, head_dim);
           
-          SpargeAttentionSM90Dispatched<CTA_Q, CTA_K, NUM_THREADS, HEAD_DIM, QK_QUANT_GRAN, 0, DTypeOut, IS_CAUSAL, true, false>(
+          SpargeAttentionSM90Dispatched<CTA_Q, CTA_K, NUM_THREADS, HEAD_DIM, QK_QUANT_GRAN, 0, CDF_THRESHD_MODE_DEFAULT, DTypeOut, IS_CAUSAL, true, false>( // FIX 2: Added CDF template arg
               reinterpret_cast<int8_t*>(query.data_ptr()),
               reinterpret_cast<int8_t*>(key.data_ptr()),
               reinterpret_cast<__nv_fp8_e4m3*>(value.data_ptr()),
@@ -185,7 +190,7 @@ void qk_int8_sv_f8_accum_f32_block_sparse_attn_inst_buf_fuse_v_scale_sm90(
               stride_bz_k, stride_seq_k, stride_h_k,
               stride_bz_v, stride_h_v, stride_d_v,
               stride_bz_o, stride_seq_o, stride_h_o,
-              sm_scale);
+              sm_scale, cdfthreshd); // FIX 3: Passed cdfthreshd
         });
       });
     });
@@ -207,6 +212,7 @@ torch::Tensor qk_int8_sv_f8_accum_f32_block_sparse_attn_inst_buf_fuse_v_scale_wi
                     int is_causal,
                     int qk_quant_gran,
                     float sm_scale,
+                    float cdfthreshd, // FIX 4: Added cdfthreshd to function signature
                     int return_pv_count)
 {
   CHECK_CUDA(query);
@@ -357,7 +363,8 @@ torch::Tensor qk_int8_sv_f8_accum_f32_block_sparse_attn_inst_buf_fuse_v_scale_wi
 
             CHECK_SHAPE(value_scale, batch_size, num_kv_heads, head_dim);
             
-            SpargeAttentionSM90Dispatched<CTA_Q, CTA_K, NUM_THREADS, HEAD_DIM, QK_QUANT_GRAN, 1, DTypeOut, IS_CAUSAL, true, RETURN_PV_COUNT>(
+            // FIX 5: Corrected template instantiation for SpargeAttentionSM90Dispatched (11 template args total)
+            SpargeAttentionSM90Dispatched<CTA_Q, CTA_K, NUM_THREADS, HEAD_DIM, QK_QUANT_GRAN, 1, CDF_THRESHD_MODE_PV_ENABLED, DTypeOut, IS_CAUSAL, true, RETURN_PV_COUNT>(
                 reinterpret_cast<int8_t*>(query.data_ptr()),
                 reinterpret_cast<int8_t*>(key.data_ptr()),
                 reinterpret_cast<__nv_fp8_e4m3*>(value.data_ptr()),
@@ -374,7 +381,7 @@ torch::Tensor qk_int8_sv_f8_accum_f32_block_sparse_attn_inst_buf_fuse_v_scale_wi
                 stride_bz_k, stride_seq_k, stride_h_k,
                 stride_bz_v, stride_h_v, stride_d_v,
                 stride_bz_o, stride_seq_o, stride_h_o,
-                sm_scale);
+                sm_scale, cdfthreshd); // FIX 6: Passed cdfthreshd
           });
         });
       });
