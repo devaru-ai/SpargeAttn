@@ -49,7 +49,7 @@ __global__ void qk_int_sv_f8_block_sparse_attn_kernel(int8_t *__restrict__ Q, in
                       const uint32_t stride_bz_q, const uint32_t stride_seq_q, const uint32_t stride_h_q, 
                       const uint32_t stride_bz_k, const uint32_t stride_seq_k, const uint32_t stride_h_k,
                       const uint32_t stride_bz_v, const uint32_t stride_h_v, const uint32_t stride_d_v,
-                      const uint32_t stride_bz_o, const uint32_t stride_seq_o, const uint32s_t stride_h_o,
+                      const uint32_t stride_bz_o, const uint32_t stride_seq_o, const uint32_t stride_h_o,
                       float sm_scale,
                       float cdfthreshd) // FIX 2: Added cdfthreshd runtime argument
 {
