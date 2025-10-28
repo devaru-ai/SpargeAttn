@@ -21,6 +21,7 @@
 #include "../cp_async.cuh"
 #include "../mma.cuh"
 #include "../permuted_smem.cuh"
+#include "../numeric_conversion.cuh"
 #include "../math.cuh"
 #include "../reduction_utils.cuh"
 #include "attn_utils.cuh"
@@ -254,7 +255,7 @@ __global__ void qk_int_sv_f8_block_sparse_attn_kernel(int8_t *__restrict__ Q, in
   K_lane_base_ptr += KV_block_increm * CTA_K * stride_seq_k;
   K_load_idx_lane_base += KV_block_increm * CTA_K;
   K_idx_lane_base += KV_block_increm * CTA_K;
-  load_global_to_share<global_to_shared_line_lanes_QK, global_to_shared_copy_lines_per_warp_QK, QK_smem_iters_row, K_smem_iters_col, swizzle_mode_QK, QK_SMEM_STRIDE / PACK_SIZE_QK, CTA_K>(
+  load_global_to_share<global_to_shared_line_lanes_QK, global_to_shared_copy_lines_per_warp_QK, QK_SMEM_STRIDE / PACK_SIZE_QK, CTA_K>(
     K_lane_base_ptr, K_smem_offset_load, stride_seq_k, smem_K, K_load_idx_lane_base, kv_len);
   cp_async::commit_group();
 
@@ -310,7 +311,7 @@ __global__ void qk_int_sv_f8_block_sparse_attn_kernel(int8_t *__restrict__ Q, in
       K_lane_base_ptr += KV_block_increm * CTA_K * stride_seq_k;
       K_load_idx_lane_base += KV_block_increm * CTA_K;
       K_idx_lane_base += KV_block_increm * CTA_K;
-      load_global_to_share<global_to_shared_line_lanes_QK, global_to_shared_copy_lines_per_warp_QK, QK_smem_iters_row, K_smem_iters_col, swizzle_mode_QK, QK_SMEM_STRIDE / PACK_SIZE_QK, CTA_K>(
+      load_global_to_share<global_to_shared_line_lanes_QK, global_to_shared_copy_lines_per_warp_QK, QK_SMEM_STRIDE / PACK_SIZE_QK, CTA_K>(
         K_lane_base_ptr, K_smem_offset_load, stride_seq_k, smem_K);
       cp_async::commit_group();
   
@@ -422,7 +423,7 @@ __global__ void qk_int_sv_f8_block_sparse_attn_kernel(int8_t *__restrict__ Q, in
       K_lane_base_ptr += KV_block_increm * CTA_K * stride_seq_k;
       K_load_idx_lane_base += KV_block_increm * CTA_K;
       K_idx_lane_base += KV_block_increm * CTA_K;
-      load_global_to_share<global_to_shared_line_lanes_QK, global_to_shared_copy_lines_per_warp_QK, QK_smem_iters_row, K_smem_iters_col, swizzle_mode_QK, QK_SMEM_STRIDE / PACK_SIZE_QK, CTA_K>(
+      load_global_to_share<global_to_shared_line_lanes_QK, global_to_shared_copy_lines_per_warp_QK, QK_SMEM_STRIDE / PACK_SIZE_QK, CTA_K>(
         K_lane_base_ptr, K_smem_offset_load, stride_seq_k, smem_K);
       cp_async::commit_group();
   
@@ -756,7 +757,7 @@ __global__ void qk_int_sv_f8_block_sparse_attn_kernel(int8_t *__restrict__ Q, in
   }
 }
 
-// FIX 3: Added cdf_threashold_mode template parameter to dispatcher signature
+// FIX 3: Corrected Template Definition for the Dispatcher (15 Arguments)
 template<uint32_t CTA_Q, uint32_t CTA_K, uint32_t WARP_Q, uint32_t WARP_K, uint32_t head_dim, uint32_t qk_quant_gran, typename DTypePVAccum, bool use_inst_buffer, bool use_pv_fp16_accu, uint32_t pv_threashold_mode, uint32_t cdf_threashold_mode, typename DTypeOut, bool is_causal, bool fuse_v_scale, bool return_pv_count>
 void SpargeAttentionSM89Dispatched(
   int8_t* Q, int8_t* K, __nv_fp8_e4m3* V, DTypeOut* O,
@@ -771,6 +772,7 @@ void SpargeAttentionSM89Dispatched(
   float cdfthreshd) // FIX 4: Added cdfthreshd runtime argument
 {
   constexpr MaskMode mask_mode = is_causal ? MaskMode::kCausal : MaskMode::kNone;
+  const uint32_t num_kv_groups = num_qo_heads / num_kv_heads;
 
   //                                     smem_Q                                     smem_K                            smem_V                     smem_O
   size_t smem_max = std::max(CTA_Q * head_dim * sizeof(int8_t) + CTA_K * head_dim * sizeof(int8_t) + CTA_K * head_dim * sizeof(int8_t), CTA_Q * head_dim * sizeof(half));
@@ -797,7 +799,7 @@ void SpargeAttentionSM89Dispatched(
     V_scale,
     qo_len,
     kv_len,
-    num_qo_heads / num_kv_groups,
+    num_kv_groups, // FIX 7: num_kv_groups is now correctly passed
     stride_bz_q, stride_seq_q, stride_h_q,
     stride_bz_k, stride_seq_k, stride_h_k,
     stride_bz_v, stride_h_v, stride_d_v,

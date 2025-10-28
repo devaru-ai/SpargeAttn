@@ -373,7 +373,7 @@ __device__ __forceinline__ void apply_out_of_bound_mask(const uint32_t &K_idx_la
       for (uint32_t k = 0; k < 8; k++)
       {
         const uint32_t kv_idx = K_idx_lane_base + fk * 16 + 8 * (k / 4) + k % 2;
-        const bool out_of__boundary = (kv_idx >= kv_len);
+        const bool out_of_boundary = (kv_idx >= kv_len); // FIX: Ensure variable scope is handled by the caller
 
         if constexpr (std::is_same<DTypeQKAccum, float>::value)
         {
@@ -754,9 +754,9 @@ __device__ __forceinline__ void compute_fp16_sv_permuted_inst_buf(const smem_t<s
   offset_V -= (16 * num_tiles_k * stride);
 }
 
-template<uint32_t num_tiles_q, uint32_t num_tiles_v,
-       ComputeUnit compute_unit = ComputeUnit::kTensorCore, // compute unit for accumulate_d
-       typename DTypeQKAccum, typename DTypeSVAccum>
+template <uint32_t num_tiles_q, uint32_t num_tiles_k, uint32_t num_tiles_v,
+          ComputeUnit compute_unit = ComputeUnit::kTensorCore, // compute unit for accumulate_d
+          typename DTypeQKAccum, typename DTypeSVAccum>
 __device__ __forceinline__ void normalize_d(DTypeSVAccum RO[][num_tiles_v][8], DTypeQKAccum m[][2], float d[][2])
 {
   if constexpr (compute_unit == ComputeUnit::kCudaCore)
