@@ -23,7 +23,7 @@
 #include "../permuted_smem.cuh"
 #include "../math.cuh"
 #include "../reduction_utils.cuh"
-#include "attn_utils.cuh"
+#include "attn_utils.cuh" // Contains corrected utility signatures
 
 #define PACK_SIZE_QK 16 // as if it is int8
 #define PACK_SIZE_V 8   // fp16
@@ -43,14 +43,14 @@
 template<uint32_t CTA_Q, uint32_t CTA_K, uint32_t WARP_Q, uint32_t WARP_K, uint32_t head_dim, DataType DTypeQK, QuantGranularity Q_GRAN, QuantGranularity K_GRAN,
         bool use_inst_buffer = false, PVThresholdMode pv_threashold_mode, uint32_t cdf_threashold_mode, typename DTypeOut = half, ComputeUnit DenominatorAccumUnit, MaskMode mask_mode = MaskMode::kNone, bool return_pv_count = false>
 __global__ void qk_int_sv_f16_block_sparse_attn_kernel(int8_t *__restrict__ Q, int8_t *__restrict__ K, half *__restrict__ V, DTypeOut *__restrict__ O, int32_t *__restrict__ PV_Count, int32_t *__restrict__ Lut, int32_t *__restrict__ Valid_Block_Num, float *__restrict__ PV_Threshold,
-                      float *__restrict__ Q_scale, float *__restrict__ K_scale,
-                      const uint32_t qo_len, const uint32_t kv_len, const uint32_t num_kv_groups,
-                      const uint32_t stride_bz_q, const uint32_t stride_seq_q, const uint32_t stride_h_q,
-                      const uint32_t stride_bz_k, const uint32_t stride_seq_k, const uint32_t stride_h_k,
-                      const uint32_t stride_bz_v, const uint32_t stride_seq_v, const uint32_t stride_h_v,
-                      const uint32_t stride_bz_o, const uint32_t stride_seq_o, const uint32_t stride_h_o,
-                      float sm_scale,
-                      float cdfthreshd)
+                       float *__restrict__ Q_scale, float *__restrict__ K_scale,
+                       const uint32_t qo_len, const uint32_t kv_len, const uint32_t num_kv_groups,
+                       const uint32_t stride_bz_q, const uint32_t stride_seq_q, const uint32_t stride_h_q,
+                       const uint32_t stride_bz_k, const uint32_t stride_seq_k, const uint32_t stride_h_k,
+                       const uint32_t stride_bz_v, const uint32_t stride_seq_v, const uint32_t stride_h_v,
+                       const uint32_t stride_bz_o, const uint32_t stride_seq_o, const uint32_t stride_h_o,
+                       float sm_scale,
+                       float cdfthreshd)
 {
   // compile time check
   static_assert(DTypeQK == DataType::kInt8 || DTypeQK == DataType::kInt4, "DTypeQK must be int8 or int4");
@@ -292,7 +292,7 @@ __global__ void qk_int_sv_f16_block_sparse_attn_kernel(int8_t *__restrict__ Q, i
       K_load_idx_lane_base += KV_block_increm * CTA_K;
       K_idx_lane_base += KV_block_increm * CTA_K;
       load_global_to_share<global_to_shared_line_lanes_QK, global_to_shared_copy_lines_per_warp_QK, QK_smem_iters_row, K_smem_iters_col, swizzle_mode_QK, QK_SMEM_STRIDE / PACK_SIZE_QK, CTA_K>(
-        K_lane_base_ptr, K_smem_offset_load, stride_seq_k, smem_K);
+        K_lane_base_ptr, K_smem_offset_load, stride_seq_k, smem_K, K_load_idx_lane_base, kv_len);
       cp_async::commit_group();
   
       float local_max_diff = update_mo<num_tiles_q, num_tiles_k, num_tiles_v, false, false, false>(RS_f32, RO, m, d, sm_scale);
@@ -335,22 +335,21 @@ __global__ void qk_int_sv_f16_block_sparse_attn_kernel(int8_t *__restrict__ Q, i
       // skip the computation on warp level
       if (local_max_diff + pv_threshold > 0)
       {
-
         if constexpr (return_pv_count)
         {
           pv_count++;
         }
 
         exponentiate_r<num_tiles_q, num_tiles_k, false>(RS_f32, m, sm_scale);
-
+        
         if constexpr (DenominatorAccumUnit == ComputeUnit::kCudaCore)
         {
           accumulate_d<num_tiles_q, num_tiles_k, ComputeUnit::kCudaCore>(RS_f32, d);
         }
-
+    
         uint32_t RS_f16[num_tiles_q][num_tiles_k][4];
         RS_32_to_16<num_tiles_q, num_tiles_k>(RS_f32, RS_f16);
-
+    
         if constexpr (DenominatorAccumUnit == ComputeUnit::kTensorCore)
         {
           accumulate_d<num_tiles_q, num_tiles_k, ComputeUnit::kTensorCore>(RS_f16, d);
@@ -376,7 +375,8 @@ __global__ void qk_int_sv_f16_block_sparse_attn_kernel(int8_t *__restrict__ Q, i
         pv_count++;
       }
       
-      update_mdo<num_tiles_q, num_tiles_k, num_tiles_v, false, false, false>(RS_f32, RO, m, d, sm_scale);
+      // FIX 1: Pass cdf_threashold_mode to update_mdo
+      update_mdo<num_tiles_q, num_tiles_k, num_tiles_v, false, false, false, cdf_threashold_mode>(RS_f32, RO, m, d, sm_scale);
 
       if constexpr (DenominatorAccumUnit == ComputeUnit::kCudaCore)
       {
@@ -399,7 +399,7 @@ __global__ void qk_int_sv_f16_block_sparse_attn_kernel(int8_t *__restrict__ Q, i
       K_load_idx_lane_base += KV_block_increm * CTA_K;
       K_idx_lane_base += KV_block_increm * CTA_K;
       load_global_to_share<global_to_shared_line_lanes_QK, global_to_shared_copy_lines_per_warp_QK, QK_smem_iters_row, K_smem_iters_col, swizzle_mode_QK, QK_SMEM_STRIDE / PACK_SIZE_QK, CTA_K>(
-        K_lane_base_ptr, K_smem_offset_load, stride_seq_k, smem_K);
+        K_lane_base_ptr, K_smem_offset_load, stride_seq_k, smem_K, K_load_idx_lane_base, kv_len);
       cp_async::commit_group();
 
       // ensure V is ready
@@ -417,7 +417,7 @@ __global__ void qk_int_sv_f16_block_sparse_attn_kernel(int8_t *__restrict__ Q, i
           smem_V, RS_f16, RO, d, V_smem_offset_mma); 
       }
     }
-    
+
     __syncthreads();
 
     // load V
@@ -465,7 +465,7 @@ __global__ void qk_int_sv_f16_block_sparse_attn_kernel(int8_t *__restrict__ Q, i
     KV_block_increm = Lut[num_iterations - 1];
     K_lane_base_ptr += KV_block_increm * CTA_K * stride_seq_k;
     K_load_idx_lane_base += KV_block_increm * CTA_K;
-    load_global_to_share<global_to_shared_line_lanes_QK, global_to_shared_copy_lines_per_warp_QK, QK_SMEM_STRIDE / PACK_SIZE_QK, CTA_K>(
+    load_global_to_share<global_to_shared_line_lanes_QK, global_to_shared_copy_lines_per_warp_QK, QK_smem_iters_row, K_smem_iters_col, swizzle_mode_QK, QK_SMEM_STRIDE / PACK_SIZE_QK, CTA_K>(
       K_lane_base_ptr, K_smem_offset_load, stride_seq_k, smem_K, K_load_idx_lane_base, kv_len);
     cp_async::commit_group();
 
@@ -475,7 +475,8 @@ __global__ void qk_int_sv_f16_block_sparse_attn_kernel(int8_t *__restrict__ Q, i
     }
     K_idx_lane_base += KV_block_increm * CTA_K;
 
-    update_mdo<num_tiles_q, num_tiles_k, num_tiles_v, false, false, false>(RS_f32, RO, m, d, original_sm_scale);
+    // FIX 2: Pass cdf_threashold_mode to update_mdo
+    update_mdo<num_tiles_q, num_tiles_k, num_tiles_v, false, false, false, cdf_threashold_mode>(RS_f32, RO, m, d, original_sm_scale);
 
     if constexpr (DenominatorAccumUnit == ComputeUnit::kCudaCore)
     {
@@ -545,9 +546,14 @@ __global__ void qk_int_sv_f16_block_sparse_attn_kernel(int8_t *__restrict__ Q, i
 #pragma unroll
         for (uint32_t k = 0; k < 8; k++)
         {
-            RS_f32[fq][fk][k] = __int2float_rz(RS[fq][fk][k]) * dequant_scale;
+          RS_f32[fq][fk][k] = __int2float_rz(RS[fq][fk][k]) * dequant_scale;
         }
       }
+    }
+
+    if constexpr (return_pv_count)
+    {
+      pv_count++;
     }
 
     if constexpr (mask_mode == MaskMode::kCausal)
@@ -557,7 +563,8 @@ __global__ void qk_int_sv_f16_block_sparse_attn_kernel(int8_t *__restrict__ Q, i
     // check out of bound in the last iter
     apply_out_of_bound_mask<num_tiles_q, num_tiles_k>(K_idx_lane_base, RS_f32, kv_len);
 
-    update_mdo<num_tiles_q, num_tiles_k, num_tiles_v, false, false, false>(RS_f32, RO, m, d, original_sm_scale);
+    // FIX 3: Pass cdf_threashold_mode to update_mdo
+    update_mdo<num_tiles_q, num_tiles_k, num_tiles_v, false, false, false, cdf_threashold_mode>(RS_f32, RO, m, d, original_sm_scale);
 
     if constexpr (DenominatorAccumUnit == ComputeUnit::kCudaCore)
     {
@@ -576,11 +583,6 @@ __global__ void qk_int_sv_f16_block_sparse_attn_kernel(int8_t *__restrict__ Q, i
     cp_async::wait_group<0>();
     __syncthreads();
 
-    if constexpr (return_pv_count)
-    {
-      pv_count++;
-    }
-
     if constexpr (!use_inst_buffer)
     {
       compute_fp16_sv_permuted<num_warps_q, num_warps_k, num_tiles_q, num_tiles_k, num_tiles_v, swizzle_mode_V, V_SMEM_STRIDE / PACK_SIZE_V, 4>(
@@ -598,16 +600,15 @@ __global__ void qk_int_sv_f16_block_sparse_attn_kernel(int8_t *__restrict__ Q, i
 
   if constexpr (return_pv_count)
   {
-
     if (lane_id == 0)
     {
       PV_Count[batch_id * num_qo_heads * num_block_q * num_warps_q + head_id * num_block_q * num_warps_q + bx * num_warps_q + get_warp_idx_q<num_warps_q, num_warps_k>()] = pv_count;
     }
-
     __syncthreads();
   }
 
-  normalize_d<num_tiles_q, num_tiles_v, DenominatorAccumUnit>(RO, m, d);
+  // FIX 4: Explicitly pass float as the DTypeQKAccum to match the utility signature
+  normalize_d<num_tiles_q, num_tiles_v, DenominatorAccumUnit, float>(RO, m, d);
 
   // save the result to shared memory
   uint32_t smem_O_row_base = get_warp_idx_q<num_warps_q, num_warps_k>() * WARP_Q + lane_id / 4;
@@ -637,9 +638,10 @@ __global__ void qk_int_sv_f16_block_sparse_attn_kernel(int8_t *__restrict__ Q, i
       ((int32_t*)(smem_O.base + offset_O))[lane_id % 4] = RO_f16[0];
       ((int32_t*)(smem_O.base + offset_O + 8 * (O_SMEM_STRIDE / PACK_SIZE_O)))[lane_id % 4] = RO_f16[1];
 
-      // ! permuted, make sure you know what you are doing
-      ((int32_t*)(smem_O.base + (offset_O ^ 0x1)))[lane_id % 4] = RO_f16[2];
-      ((int32_t*)(smem_O.base + (offset_O ^ 0x1) + 8 * (O_SMEM_STRIDE / PACK_SIZE_O)))[lane_id % 4] = RO_f16[3];
+      offset_O = smem_O.advance_offset_by_column<2>(offset_O - (num_tiles_q * 16 * stride), iter); // Reset offset_O to original column
+      offset_O = smem_O.get_permuted_offset(smem_O_row_base + fq * MMA_QK_M, fv * (MMA_SV_N / PACK_SIZE_O) + 1);
+      ((int32_t*)(smem_O.base + offset_O))[lane_id % 4] = RO_f16[2];
+      ((int32_t*)(smem_O.base + offset_O + 8 * (O_SMEM_STRIDE / PACK_SIZE_O)))[lane_id % 4] = RO_f16[3];
     }
   }
 
@@ -669,54 +671,4 @@ __global__ void qk_int_sv_f16_block_sparse_attn_kernel(int8_t *__restrict__ Q, i
     O_lane_ptr += ((global_to_shared_copy_lines_per_warp_O * stride_seq_o) - (O_smem_iters_row * global_to_shared_line_lanes_O * PACK_SIZE_O));
     O_load_idx_lane_base += global_to_shared_copy_lines_per_warp_O;
   }
-}
-
-
-template<uint32_t CTA_Q, uint32_t CTA_K, uint32_t WARP_Q, uint32_t WARP_K, uint32_t head_dim, uint32_t qk_quant_gran, typename DTypePVAccum, bool use_inst_buffer, uint32_t pv_threashold_mode, uint32_t cdf_threashold_mode, typename DTypeOut, bool is_causal, bool return_pv_count>
-void SpargeAttentionSM80Dispatched(
-  int8_t* Q, int8_t* K, half* V, DTypeOut* O,
-  int32_t* PV_Count, int32_t *__restrict__ Lut, int32_t *__restrict__ Valid_Block_Num, float *__restrict__ PV_Threshold,
-  float* Q_scale, float* K_scale,
-  const uint32_t batch_size, const uint32_t qo_len, const uint32_t kv_len, const uint32_t num_qo_heads, const uint32_t num_kv_heads,
-  const uint32_t stride_bz_q, const uint32_t stride_seq_q, const uint32_t stride_h_q,
-  const uint32_t stride_bz_k, const uint32_t stride_seq_k, const uint32_t stride_h_k,
-  const uint32_t stride_bz_v, const uint32_t stride_seq_v, const uint32_t stride_h_v,
-  const uint32_t stride_bz_o, const uint32_t stride_seq_o, const uint32_t stride_h_o,
-  float sm_scale,
-  float cdfthreshd) 
-{
-  constexpr MaskMode mask_mode = is_causal ? MaskMode::kCausal : MaskMode::kNone;
-
-  //                                     smem_Q                                     smem_K                            smem_V                     smem_O
-  size_t smem_max = std::max(CTA_Q * head_dim * sizeof(int8_t) + CTA_K * head_dim * sizeof(int8_t) + CTA_K * head_dim * sizeof(half), CTA_Q * head_dim * sizeof(half));
-  
-  // FIX 5: Corrected Template Instantiation for the Kernel (15 Arguments)
-  auto kernel_func = qk_int_sv_f16_block_sparse_attn_kernel<CTA_Q, CTA_K, WARP_Q, WARP_K, head_dim, DataType::kInt8, static_cast<QuantGranularity>(qk_quant_gran), static_cast<QuantGranularity>(qk_quant_gran), use_inst_buffer, static_cast<PVThresholdMode>(pv_threashold_mode), cdf_threashold_mode, DTypeOut, ComputeUnit::kTensorCore, 
-                                                mask_mode, return_pv_count>;
-
-  cudaFuncSetAttribute(kernel_func, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_max);
-
-  dim3 grid(div_ceil(qo_len, CTA_Q), num_qo_heads, batch_size);
-  dim3 block(32, (CTA_Q / WARP_Q) * (CTA_K / WARP_K));
-
-  kernel_func<<<grid, block, smem_max>>>(
-    Q, 
-    K,
-    V,
-    O,
-    PV_Count,
-    Lut,
-    Valid_Block_Num,
-    PV_Threshold,
-    Q_scale,
-    K_scale,
-    qo_len,
-    kv_len,
-    num_qo_heads / num_kv_heads,
-    stride_bz_q, stride_seq_q, stride_h_q,
-    stride_bz_k, stride_seq_k, stride_h_k,
-    stride_bz_v, stride_seq_v, stride_h_v,
-    stride_bz_o, stride_seq_o, stride_h_o,
-    sm_scale, 
-    cdfthreshd); // FIX 6: Added cdfthreshd to kernel launch
 }
