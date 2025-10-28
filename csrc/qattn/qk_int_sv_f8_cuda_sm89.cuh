@@ -49,7 +49,7 @@ __global__ void qk_int_sv_f8_block_sparse_attn_kernel(int8_t *__restrict__ Q, in
                       const uint32_t stride_bz_q, const uint32_t stride_seq_q, const uint32_t stride_h_q, 
                       const uint32_t stride_bz_k, const uint32_t stride_seq_k, const uint32_t stride_h_k,
                       const uint32_t stride_bz_v, const uint32_t stride_h_v, const uint32_t stride_d_v,
-                      const uint32_t stride_bz_o, const uint32_t stride_seq_o, const uint32_t stride_h_o,
+                      const uint32_t stride_bz_o, const uint32_t stride_seq_o, const uint32s_t stride_h_o,
                       float sm_scale,
                       float cdfthreshd) // FIX 2: Added cdfthreshd runtime argument
 {
@@ -242,7 +242,7 @@ __global__ void qk_int_sv_f8_block_sparse_attn_kernel(int8_t *__restrict__ Q, in
   Lut += batch_id * num_qo_heads * num_block_q * num_block_k + head_id * num_block_q * num_block_k + bx * num_block_k;
 
   // load Q with predicate
-  load_global_to_share<global_to_shared_line_lanes_QK, global_to_shared_copy_lines_per_warp_QK, QK_SMEM_STRIDE / PACK_SIZE_QK, CTA_Q>(
+  load_global_to_share<global_to_shared_line_lanes_QK, global_to_shared_copy_lines_per_warp_QK, QK_smem_iters_row, Q_smem_iters_col, swizzle_mode_QK, QK_SMEM_STRIDE / PACK_SIZE_QK, CTA_Q>(
     Q_lane_base_ptr, Q_smem_offset_load, stride_seq_q, smem_Q, Q_load_idx_lane_base, qo_len);
   cp_async::commit_group();
   cp_async::wait_group<0>();
@@ -255,7 +255,7 @@ __global__ void qk_int_sv_f8_block_sparse_attn_kernel(int8_t *__restrict__ Q, in
   K_lane_base_ptr += KV_block_increm * CTA_K * stride_seq_k;
   K_load_idx_lane_base += KV_block_increm * CTA_K;
   K_idx_lane_base += KV_block_increm * CTA_K;
-  load_global_to_share<global_to_shared_line_lanes_QK, global_to_shared_copy_lines_per_warp_QK, QK_SMEM_STRIDE / PACK_SIZE_QK, CTA_K>(
+  load_global_to_share<global_to_shared_line_lanes_QK, global_to_shared_copy_lines_per_warp_QK, QK_smem_iters_row, K_smem_iters_col, swizzle_mode_QK, QK_SMEM_STRIDE / PACK_SIZE_QK, CTA_K>(
     K_lane_base_ptr, K_smem_offset_load, stride_seq_k, smem_K, K_load_idx_lane_base, kv_len);
   cp_async::commit_group();
 
@@ -267,10 +267,7 @@ __global__ void qk_int_sv_f8_block_sparse_attn_kernel(int8_t *__restrict__ Q, in
 
   sm_scale = original_sm_scale * dequant_scale;
 
-  // load V
-  // ! we assume that V is padded. If not, there might be illegal memory access or nan issue.
-  // for fp16: 
-  // load_global_to_share                stride_seq_v
+  // load V with predicate
   V_lane_base_ptr += KV_block_increm * CTA_K;
   load_fp8_V_global_to_share<global_to_shared_line_lanes_V, global_to_shared_copy_lines_per_warp_V, V_smem_iters_row, V_smem_iters_col, swizzle_mode_V, V_SMEM_STRIDE / PACK_SIZE_V, CTA_K>(
     V_lane_base_ptr, V_smem_offset_load, stride_d_v, smem_V);
@@ -283,18 +280,19 @@ __global__ void qk_int_sv_f8_block_sparse_attn_kernel(int8_t *__restrict__ Q, in
     cp_async::wait_group<1>();
     __syncthreads();
 
+    // compute QK^T
     compute_int_qk<num_warps_q, num_warps_k, num_tiles_q, num_tiles_k, num_tiles_qk_inner, swizzle_mode_QK, QK_SMEM_STRIDE / PACK_SIZE_QK, DTypeQK>(
-    smem_Q, smem_K, RS, Q_smem_offset_mma, K_smem_offset_mma);
-    
+      smem_Q, smem_K, RS, Q_smem_offset_mma, K_smem_offset_mma);
+
     float RS_f32[num_tiles_q][num_tiles_k][8];
 
-#pragma unroll
+    #pragma unroll
     for (uint32_t fq = 0; fq < num_tiles_q; fq++)
     {
-#pragma unroll
+    #pragma unroll
       for (uint32_t fk = 0; fk < num_tiles_k; fk++)
       {
-#pragma unroll
+      #pragma unroll
         for (uint32_t k = 0; k < 8; k++)
         {
           RS_f32[fq][fk][k] = __int2float_rz(RS[fq][fk][k]);
@@ -311,8 +309,8 @@ __global__ void qk_int_sv_f8_block_sparse_attn_kernel(int8_t *__restrict__ Q, in
       K_lane_base_ptr += KV_block_increm * CTA_K * stride_seq_k;
       K_load_idx_lane_base += KV_block_increm * CTA_K;
       K_idx_lane_base += KV_block_increm * CTA_K;
-      load_global_to_share<global_to_shared_line_lanes_QK, global_to_shared_copy_lines_per_warp_QK, QK_SMEM_STRIDE / PACK_SIZE_QK, CTA_K>(
-        K_lane_base_ptr, K_smem_offset_load, stride_seq_k, smem_K);
+      load_global_to_share<global_to_shared_line_lanes_QK, global_to_shared_copy_lines_per_warp_QK, QK_smem_iters_row, K_smem_iters_col, swizzle_mode_QK, QK_SMEM_STRIDE / PACK_SIZE_QK, CTA_K>(
+        K_lane_base_ptr, K_smem_offset_load, stride_seq_k, smem_K, K_load_idx_lane_base, kv_len);
       cp_async::commit_group();
   
       float local_max_diff = update_mo<num_tiles_q, num_tiles_k, num_tiles_v, false, false, false>(RS_f32, RO, m, d, sm_scale);
@@ -400,40 +398,38 @@ __global__ void qk_int_sv_f8_block_sparse_attn_kernel(int8_t *__restrict__ Q, in
       {
         pv_count++;
       }
+      
+      // FIX 1: Pass cdf_threashold_mode to update_mdo (LINE 478)
+      update_mdo<num_tiles_q, num_tiles_k, num_tiles_v, false, true, false, cdf_threashold_mode>(RS_f32, RO, m, d, sm_scale);
 
-      update_mdo<num_tiles_q, num_tiles_k, num_tiles_v, false, true, false>(RS_f32, RO, m, d, sm_scale);
-  
       if constexpr (DenominatorAccumUnit == ComputeUnit::kCudaCore)
       {
         accumulate_d<num_tiles_q, num_tiles_k, ComputeUnit::kCudaCore>(RS_f32, d);
       }
-  
+
       uint32_t RS_f8[num_tiles_q][num_tiles_k / 2][4];
       RS_32_to_8<num_tiles_q, num_tiles_k>(RS_f32, RS_f8);
-  
+
       if constexpr (DenominatorAccumUnit == ComputeUnit::kTensorCore)
       {
         accumulate_d_f8<num_tiles_q, num_tiles_k>(RS_f8, d);
       }
-  
+
       __syncthreads();
-  
+
       // load K
       KV_block_increm = Lut[iter];
       K_lane_base_ptr += KV_block_increm * CTA_K * stride_seq_k;
       K_load_idx_lane_base += KV_block_increm * CTA_K;
       K_idx_lane_base += KV_block_increm * CTA_K;
-      load_global_to_share<global_to_shared_line_lanes_QK, global_to_shared_copy_lines_per_warp_QK, QK_SMEM_STRIDE / PACK_SIZE_QK, CTA_K>(
-        K_lane_base_ptr, K_smem_offset_load, stride_seq_k, smem_K);
+      load_global_to_share<global_to_shared_line_lanes_QK, global_to_shared_copy_lines_per_warp_QK, QK_smem_iters_row, K_smem_iters_col, swizzle_mode_QK, QK_SMEM_STRIDE / PACK_SIZE_QK, CTA_K>(
+        K_lane_base_ptr, K_smem_offset_load, stride_seq_k, smem_K, K_load_idx_lane_base, kv_len);
       cp_async::commit_group();
-  
+
       // ensure V is ready
       cp_async::wait_group<1>();
       __syncthreads();
-  
-      // for fp16:
-      // compute_fp16_sv_permuted<num_warps_q, num_warps_k, num_tiles_q, num_tiles_k, num_tiles_v, swizzle_mode_V, V_SMEM_STRIDE / PACK_SIZE_V, 4>(
-      //   smem_V, RS_f16, RO, d, V_smem_offset_mma);
+
       if constexpr (!use_inst_buffer)
       {
         compute_fp8_sv<num_warps_q, num_warps_k, num_tiles_q, num_tiles_k, num_tiles_v, swizzle_mode_V, V_SMEM_STRIDE / PACK_SIZE_V>(
@@ -453,14 +449,13 @@ __global__ void qk_int_sv_f8_block_sparse_attn_kernel(int8_t *__restrict__ Q, in
     }
 
     __syncthreads();
+
     // load V
-    // for fp16: 
-    // load_global_to_share                stride_seq_v
     V_lane_base_ptr += KV_block_increm * CTA_K;
     load_fp8_V_global_to_share<global_to_shared_line_lanes_V, global_to_shared_copy_lines_per_warp_V, V_smem_iters_row, V_smem_iters_col, swizzle_mode_V, V_SMEM_STRIDE / PACK_SIZE_V, CTA_K>(
       V_lane_base_ptr, V_smem_offset_load, stride_d_v, smem_V);
     cp_async::commit_group();
-  
+
     k_scale_idx += KV_block_increm * k_scale_advance_offset;
     dequant_scale = q_scale * K_scale[k_scale_idx];
     sm_scale = original_sm_scale * dequant_scale;
@@ -475,17 +470,17 @@ __global__ void qk_int_sv_f8_block_sparse_attn_kernel(int8_t *__restrict__ Q, in
 
     // compute QK^T
     compute_int_qk<num_warps_q, num_warps_k, num_tiles_q, num_tiles_k, num_tiles_qk_inner, swizzle_mode_QK, QK_SMEM_STRIDE / PACK_SIZE_QK, DTypeQK>(
-    smem_Q, smem_K, RS, Q_smem_offset_mma, K_smem_offset_mma);
+      smem_Q, smem_K, RS, Q_smem_offset_mma, K_smem_offset_mma);
 
     float RS_f32[num_tiles_q][num_tiles_k][8];
 
-#pragma unroll
+    #pragma unroll
     for (uint32_t fq = 0; fq < num_tiles_q; fq++)
     {
-#pragma unroll
+    #pragma unroll
       for (uint32_t fk = 0; fk < num_tiles_k; fk++)
       {
-#pragma unroll
+      #pragma unroll
         for (uint32_t k = 0; k < 8; k++)
         {
           RS_f32[fq][fk][k] = __int2float_rz(RS[fq][fk][k]) * dequant_scale;
@@ -504,7 +499,7 @@ __global__ void qk_int_sv_f8_block_sparse_attn_kernel(int8_t *__restrict__ Q, in
     KV_block_increm = Lut[num_iterations - 1];
     K_lane_base_ptr += KV_block_increm * CTA_K * stride_seq_k;
     K_load_idx_lane_base += KV_block_increm * CTA_K;
-    load_global_to_share<global_to_shared_line_lanes_QK, global_to_shared_copy_lines_per_warp_QK, QK_SMEM_STRIDE / PACK_SIZE_QK, CTA_K>(
+    load_global_to_share<global_to_shared_line_lanes_QK, global_to_shared_copy_lines_per_warp_QK, QK_smem_iters_row, K_smem_iters_col, swizzle_mode_QK, QK_SMEM_STRIDE / PACK_SIZE_QK, CTA_K>(
       K_lane_base_ptr, K_smem_offset_load, stride_seq_k, smem_K, K_load_idx_lane_base, kv_len);
     cp_async::commit_group();
 
@@ -514,7 +509,8 @@ __global__ void qk_int_sv_f8_block_sparse_attn_kernel(int8_t *__restrict__ Q, in
     }
     K_idx_lane_base += KV_block_increm * CTA_K;
 
-    update_mdo<num_tiles_q, num_tiles_k, num_tiles_v, false, true, false>(RS_f32, RO, m, d, original_sm_scale);
+    // FIX 2: Pass cdf_threashold_mode to update_mdo
+    update_mdo<num_tiles_q, num_tiles_k, num_tiles_v, false, true, false, cdf_threashold_mode>(RS_f32, RO, m, d, original_sm_scale);
 
     if constexpr (DenominatorAccumUnit == ComputeUnit::kCudaCore)
     {
@@ -535,9 +531,6 @@ __global__ void qk_int_sv_f8_block_sparse_attn_kernel(int8_t *__restrict__ Q, in
     cp_async::wait_group<1>();
     __syncthreads();
 
-    // for fp16:
-    // compute_fp16_sv_permuted<num_warps_q, num_warps_k, num_tiles_q, num_tiles_k, num_tiles_v, swizzle_mode_V, V_SMEM_STRIDE / PACK_SIZE_V, 4>(
-    //   smem_V, RS_f16, RO, d, V_smem_offset_mma);
     if constexpr (!use_inst_buffer)
     {
       compute_fp8_sv<num_warps_q, num_warps_k, num_tiles_q, num_tiles_k, num_tiles_v, swizzle_mode_V, V_SMEM_STRIDE / PACK_SIZE_V>(
@@ -578,17 +571,17 @@ __global__ void qk_int_sv_f8_block_sparse_attn_kernel(int8_t *__restrict__ Q, in
 
     // compute QK^T
     compute_int_qk<num_warps_q, num_warps_k, num_tiles_q, num_tiles_k, num_tiles_qk_inner, swizzle_mode_QK, QK_SMEM_STRIDE / PACK_SIZE_QK, DTypeQK>(
-    smem_Q, smem_K, RS, Q_smem_offset_mma, K_smem_offset_mma);
+      smem_Q, smem_K, RS, Q_smem_offset_mma, K_smem_offset_mma);
 
     float RS_f32[num_tiles_q][num_tiles_k][8];
 
-#pragma unroll
+    #pragma unroll
     for (uint32_t fq = 0; fq < num_tiles_q; fq++)
     {
-#pragma unroll
+    #pragma unroll
       for (uint32_t fk = 0; fk < num_tiles_k; fk++)
       {
-#pragma unroll
+      #pragma unroll
         for (uint32_t k = 0; k < 8; k++)
         {
           RS_f32[fq][fk][k] = __int2float_rz(RS[fq][fk][k]) * dequant_scale;
@@ -607,7 +600,8 @@ __global__ void qk_int_sv_f8_block_sparse_attn_kernel(int8_t *__restrict__ Q, in
     }
     apply_out_of_bound_mask<num_tiles_q, num_tiles_k>(K_idx_lane_base, RS_f32, kv_len);
 
-    update_mdo<num_tiles_q, num_tiles_k, num_tiles_v, false, true, false>(RS_f32, RO, m, d, original_sm_scale);
+    // FIX 3: Pass cdf_threashold_mode to update_mdo
+    update_mdo<num_tiles_q, num_tiles_k, num_tiles_v, false, true, false, cdf_threashold_mode>(RS_f32, RO, m, d, original_sm_scale);
 
     if constexpr (DenominatorAccumUnit == ComputeUnit::kCudaCore)
     {
@@ -626,9 +620,6 @@ __global__ void qk_int_sv_f8_block_sparse_attn_kernel(int8_t *__restrict__ Q, in
     cp_async::wait_group<0>();
     __syncthreads();
 
-    // for fp16:
-    // compute_fp16_sv_permuted<num_warps_q, num_warps_k, num_tiles_q, num_tiles_k, num_tiles_v, swizzle_mode_V, V_SMEM_STRIDE / PACK_SIZE_V, 4>(
-    //   smem_V, RS_f16, RO, d, V_smem_offset_mma);
     if constexpr (!use_inst_buffer)
     {
       compute_fp8_sv<num_warps_q, num_warps_k, num_tiles_q, num_tiles_k, num_tiles_v, swizzle_mode_V, V_SMEM_STRIDE / PACK_SIZE_V>(
@@ -638,7 +629,7 @@ __global__ void qk_int_sv_f8_block_sparse_attn_kernel(int8_t *__restrict__ Q, in
     {
       if constexpr(!use_pv_fp16_accu){
         compute_fp8_sv_inst_buf<num_warps_q, num_warps_k, num_tiles_q, num_tiles_k, num_tiles_v, swizzle_mode_V, V_SMEM_STRIDE / PACK_SIZE_V>(
-          smem_V, RS_f8, RO, d);   
+          smem_V, RS_f8, RO, d);
       }
       else{
         compute_fp8_sv_inst_buf_fp16_accu<num_warps_q, num_warps_k, num_tiles_q, num_tiles_k, num_tiles_v, swizzle_mode_V, V_SMEM_STRIDE / PACK_SIZE_V>(
@@ -661,32 +652,8 @@ __global__ void qk_int_sv_f8_block_sparse_attn_kernel(int8_t *__restrict__ Q, in
     __syncthreads();
   }
 
-  normalize_d<num_tiles_q, num_tiles_v, ComputeUnit::kCudaCore>(RO, m, d);
-
-  // ! here we just implement the case for fp32 acumulation
-  if constexpr (fuse_v_scale)
-  {
-    float v_scale[4];
-    float *V_scale_base_ptr = V_scale + batch_id * (num_qo_heads / num_kv_groups) * head_dim + (head_id / num_kv_groups) * head_dim + (lane_id % 4 ) * 2;
-#pragma unroll
-    for (uint32_t fv = 0; fv < num_tiles_v; fv++)
-    {
-      ((float2*)v_scale)[0] = *((float2*)(V_scale_base_ptr + fv * 16));
-      ((float2*)v_scale)[1] = *((float2*)(V_scale_base_ptr + fv * 16 + 8));
-#pragma unroll
-      for (uint32_t fq = 0; fq < num_tiles_q; fq++)
-      {
-        RO[fq][fv][0] *= v_scale[0];
-        RO[fq][fv][1] *= v_scale[1];
-        RO[fq][fv][2] *= v_scale[0];
-        RO[fq][fv][3] *= v_scale[1];
-        RO[fq][fv][4] *= v_scale[2];
-        RO[fq][fv][5] *= v_scale[3];
-        RO[fq][fv][6] *= v_scale[2];
-        RO[fq][fv][7] *= v_scale[3];
-      }
-    }
-  }
+  // FIX 4: Explicitly pass float as the DTypeQKAccum to normalize_d
+  normalize_d<num_tiles_q, num_tiles_v, ComputeUnit::kCudaCore, float>(RO, m, d);
 
   // save the result to shared memory
   uint32_t smem_O_row_base = get_warp_idx_q<num_warps_q, num_warps_k>() * WARP_Q + lane_id / 4;
