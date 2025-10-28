@@ -39,7 +39,7 @@
 #define MMA_SV_N 16
 #define MMA_SV_K 16
 
-// FIX 1 & 2: Added cdf_threashold_mode to template parameters and cdfthreshd to runtime parameters
+// FIX 1 & 2: Added cdf_threashold_mode to template parameters and cdfthreshd to runtime arguments
 template<uint32_t CTA_Q, uint32_t CTA_K, uint32_t WARP_Q, uint32_t WARP_K, uint32_t head_dim, DataType DTypeQK, QuantGranularity Q_GRAN, QuantGranularity K_GRAN,
         bool use_inst_buffer = false, PVThresholdMode pv_threashold_mode, uint32_t cdf_threashold_mode, typename DTypeOut = half, ComputeUnit DenominatorAccumUnit, MaskMode mask_mode = MaskMode::kNone, bool return_pv_count = false>
 __global__ void qk_int_sv_f16_block_sparse_attn_kernel(int8_t *__restrict__ Q, int8_t *__restrict__ K, half *__restrict__ V, DTypeOut *__restrict__ O, int32_t *__restrict__ PV_Count, int32_t *__restrict__ Lut, int32_t *__restrict__ Valid_Block_Num, float *__restrict__ PV_Threshold,
