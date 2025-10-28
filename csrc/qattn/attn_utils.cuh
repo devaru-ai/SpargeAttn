@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * http://www.apache.org/licenses/LICENSE-200
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -373,7 +373,7 @@ __device__ __forceinline__ void apply_out_of_bound_mask(const uint32_t &K_idx_la
       for (uint32_t k = 0; k < 8; k++)
       {
         const uint32_t kv_idx = K_idx_lane_base + fk * 16 + 8 * (k / 4) + k % 2;
-        const bool out_of_boundary = (kv_idx >= kv_len); // FIX: Ensure variable scope is handled by the caller
+        const bool out_of_boundary = (kv_idx >= kv_len); 
 
         if constexpr (std::is_same<DTypeQKAccum, float>::value)
         {
@@ -467,10 +467,13 @@ __device__ __forceinline__ float update_mo(float RS[][num_tiles_k][8], DTypeSVAc
 
 
 // for DTypeQKAccum float
-template <uint32_t num_tiles_q, uint32_t num_tiles_k, uint32_t num_tiles_v, bool use_half_o_scale, bool exp_offset, bool fuse_scale=false, typename DTypeSVAccum>
+// FIX: Added cdf_threashold_mode to the template arguments
+template <uint32_t num_tiles_q, uint32_t num_tiles_k, uint32_t num_tiles_v, bool use_half_o_scale, bool exp_offset, bool fuse_scale=false, uint32_t cdf_threashold_mode, typename DTypeSVAccum>
 __device__ __forceinline__ void update_mdo(float RS[][num_tiles_k][8], DTypeSVAccum RO[][num_tiles_v][8], float m[][2], float d[][2], const float &sm_scale)
 {
   static_assert(std::is_same<DTypeSVAccum, half>::value || (!use_half_o_scale));
+  // Note: Add logic here to use cdf_threashold_mode, if necessary, in a future implementation.
+
 #pragma unroll
   for (uint32_t fq = 0; fq < num_tiles_q; fq++)
   {
