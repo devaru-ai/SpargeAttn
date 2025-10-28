@@ -675,3 +675,54 @@ __global__ void qk_int_sv_f16_block_sparse_attn_kernel(int8_t *__restrict__ Q, i
     O_load_idx_lane_base += global_to_shared_copy_lines_per_warp_O;
   }
 }
+
+template<uint32_t CTA_Q, uint32_t CTA_K, uint32_t WARP_Q, uint32_t WARP_K, uint32_t head_dim, uint32_t qk_quant_gran, typename DTypePVAccum, bool use_inst_buffer, uint32_t pv_threashold_mode, uint32_t cdf_threashold_mode, typename DTypeOut, bool is_causal, bool return_pv_count>
+void SpargeAttentionSM80Dispatched(
+  int8_t* Q, int8_t* K, half* V, DTypeOut* O,
+  int32_t* PV_Count, int32_t *__restrict__ Lut, int32_t *__restrict__ Valid_Block_Num, float *__restrict__ PV_Threshold,
+  float* Q_scale, float* K_scale,
+  const uint32_t batch_size, const uint32_t qo_len, const uint32_t kv_len, const uint32_t num_qo_heads, const uint32_t num_kv_heads,
+  const uint32_t stride_bz_q, const uint32_t stride_seq_q, const uint32_t stride_h_q,
+  const uint32_t stride_bz_k, const uint32_t stride_seq_k, const uint32_t stride_h_k,
+  const uint32_t stride_bz_v, const uint32_t stride_seq_v, const uint32_t stride_h_v,
+  const uint32_t stride_bz_o, const uint32_t stride_seq_o, const uint32_t stride_h_o,
+  float sm_scale,
+  float cdfthreshd) 
+{
+  constexpr MaskMode mask_mode = is_causal ? MaskMode::kCausal : MaskMode::kNone;
+
+  //                                     smem_Q                                     smem_K                            smem_V                     smem_O
+  size_t smem_max = std::max(CTA_Q * head_dim * sizeof(int8_t) + CTA_K * head_dim * sizeof(int8_t) + CTA_K * head_dim * sizeof(half), CTA_Q * head_dim * sizeof(half));
+  
+  // FIX 5: Corrected Template Instantiation for the Kernel (15 Arguments)
+  auto kernel_func = qk_int_sv_f16_block_sparse_attn_kernel<CTA_Q, CTA_K, WARP_Q, WARP_K, head_dim, DataType::kInt8, static_cast<QuantGranularity>(qk_quant_gran), static_cast<QuantGranularity>(qk_quant_gran), use_inst_buffer, static_cast<PVThresholdMode>(pv_threashold_mode), cdf_threashold_mode, DTypeOut, ComputeUnit::kTensorCore, 
+                                                mask_mode, return_pv_count>;
+
+  cudaFuncSetAttribute(kernel_func, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_max);
+
+  dim3 grid(div_ceil(qo_len, CTA_Q), num_qo_heads, batch_size);
+  dim3 block(32, (CTA_Q / WARP_Q) * (CTA_K / WARP_K));
+
+  kernel_func<<<grid, block, smem_max>>>(
+    Q, 
+    K,
+    V,
+    O,
+    PV_Count,
+    Lut,
+    Valid_Block_Num,
+    PV_Threshold,
+    Q_scale,
+    K_scale,
+    qo_len,
+    kv_len,
+    num_qo_heads / num_kv_heads,
+    stride_bz_q, stride_seq_q, stride_h_q,
+    stride_bz_k, stride_seq_k, stride_h_k,
+    stride_bz_v, stride_seq_v, stride_h_v,
+    stride_bz_o, stride_seq_o, stride_h_o,
+    sm_scale, 
+    cdfthreshd); // FIX 6: Added cdfthreshd to kernel launch
+}
+
+
